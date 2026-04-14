@@ -1,0 +1,188 @@
+#!/bin/bash -ex
+
+NETBOX_VER=4.5.7
+NETBOX_HOME=/opt/netbox
+NETBOX_USER=netbox
+
+# -- PostgreSQL setup ---------------------------------------------------------
+
+pg_ver=$(pg_lsclusters -h | awk '{print $1}' | head -1)
+
+service postgresql start
+service redis-server start
+
+su - postgres -c "createuser ${NETBOX_USER}"
+su - postgres -c "createdb -E UTF8 -O ${NETBOX_USER} netbox"
+su - postgres -c "psql -c \"ALTER USER ${NETBOX_USER} WITH PASSWORD 'turnkey';\""
+
+# -- System user --------------------------------------------------------------
+
+adduser --system --group --home ${NETBOX_HOME} ${NETBOX_USER}
+
+# -- Clone NetBox -------------------------------------------------------------
+
+mkdir -p ${NETBOX_HOME}
+cd ${NETBOX_HOME}
+git clone --depth 1 --branch v${NETBOX_VER} \
+    https://github.com/netbox-community/netbox.git .
+
+# -- Ownership ----------------------------------------------------------------
+
+chown -R ${NETBOX_USER}:${NETBOX_USER} ${NETBOX_HOME}
+chown -R ${NETBOX_USER} ${NETBOX_HOME}/netbox/media/
+chown -R ${NETBOX_USER} ${NETBOX_HOME}/netbox/reports/
+chown -R ${NETBOX_USER} ${NETBOX_HOME}/netbox/scripts/
+
+# -- Generate secret key ------------------------------------------------------
+
+SECRET_KEY=$(python3 ${NETBOX_HOME}/netbox/generate_secret_key.py)
+
+# -- Configuration file -------------------------------------------------------
+
+cat > ${NETBOX_HOME}/netbox/netbox/configuration.py << PYEOF
+ALLOWED_HOSTS = ['*']
+
+DATABASE = {
+    'NAME': 'netbox',
+    'USER': '${NETBOX_USER}',
+    'PASSWORD': 'turnkey',
+    'HOST': 'localhost',
+    'PORT': '',
+    'CONN_MAX_AGE': 300,
+}
+
+REDIS = {
+    'tasks': {
+        'HOST': 'localhost',
+        'PORT': 6379,
+        'DATABASE': 0,
+        'SSL': False,
+    },
+    'caching': {
+        'HOST': 'localhost',
+        'PORT': 6379,
+        'DATABASE': 1,
+        'SSL': False,
+    },
+}
+
+SECRET_KEY = '${SECRET_KEY}'
+
+API_TOKEN_PEPPERS = {
+    1: '${SECRET_KEY}',
+}
+
+# IPv6-first: enable IPv6 support
+PREFER_IPV6 = True
+
+# Logging
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'file': {
+            'level': 'WARNING',
+            'class': 'logging.handlers.WatchedFileHandler',
+            'filename': '/var/log/netbox/netbox.log',
+        },
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['file'],
+            'level': 'WARNING',
+        },
+    },
+}
+PYEOF
+
+# -- OIDC SSO configuration (template, activated at first boot) ---------------
+
+cat > ${NETBOX_HOME}/netbox/netbox/oidc_config.py << 'PYEOF'
+#
+# OIDC SSO Configuration for NetBox
+# This file is sourced by configuration.py when SSO is enabled.
+# Compatible with Zitadel, Keycloak, Authentik, and any OIDC provider.
+#
+# To enable: uncomment the exec line at the bottom of configuration.py
+# and fill in the values below (or use the firstboot inithook).
+#
+
+REMOTE_AUTH_ENABLED = True
+REMOTE_AUTH_AUTO_CREATE_USER = True
+
+REMOTE_AUTH_BACKEND = 'social_core.backends.open_id_connect.OpenIdConnectAuth'
+
+SOCIAL_AUTH_OIDC_OIDC_ENDPOINT = ''   # e.g. https://sso.pop.coop
+SOCIAL_AUTH_OIDC_KEY = ''              # Client ID
+SOCIAL_AUTH_OIDC_SECRET = ''           # Client Secret
+SOCIAL_AUTH_PROTECTED_USER_FIELDS = ['groups']
+SOCIAL_AUTH_REDIRECT_IS_HTTPS = True
+PYEOF
+
+# -- OIDC dependencies in local_requirements.txt -----------------------------
+
+cat > ${NETBOX_HOME}/local_requirements.txt << 'EOF'
+python-jose
+EOF
+
+# -- Python virtual environment and dependencies ------------------------------
+
+python3 -m venv ${NETBOX_HOME}/venv
+${NETBOX_HOME}/venv/bin/pip install --upgrade pip wheel
+
+cd ${NETBOX_HOME}
+${NETBOX_HOME}/venv/bin/pip install -r requirements.txt
+${NETBOX_HOME}/venv/bin/pip install -r local_requirements.txt
+${NETBOX_HOME}/venv/bin/pip install gunicorn
+
+# -- Log directory ------------------------------------------------------------
+
+mkdir -p /var/log/netbox
+chown ${NETBOX_USER}:${NETBOX_USER} /var/log/netbox
+
+# -- Database migrations and static files -------------------------------------
+
+cd ${NETBOX_HOME}/netbox
+${NETBOX_HOME}/venv/bin/python manage.py migrate
+${NETBOX_HOME}/venv/bin/python manage.py collectstatic --no-input
+${NETBOX_HOME}/venv/bin/python manage.py remove_stale_contenttypes --no-input
+
+# -- Fix log ownership (migrations may create log as root) --------------------
+
+chown -R ${NETBOX_USER}:${NETBOX_USER} /var/log/netbox
+
+# -- Gunicorn config ----------------------------------------------------------
+
+cp ${NETBOX_HOME}/contrib/gunicorn.py ${NETBOX_HOME}/gunicorn.py
+
+# -- Housekeeping cron --------------------------------------------------------
+
+ln -s ${NETBOX_HOME}/contrib/netbox-housekeeping.sh \
+    /etc/cron.daily/netbox-housekeeping
+
+# -- Nginx configuration -----------------------------------------------------
+# (overlay provides the site config, here we just enable it)
+
+rm -f /etc/nginx/sites-enabled/default
+rm -f /etc/nginx/sites-enabled/tkl-default
+ln -s /etc/nginx/sites-available/netbox /etc/nginx/sites-enabled/netbox
+
+# -- systemd units ------------------------------------------------------------
+# (provided via overlay, just enable them)
+
+systemctl enable netbox
+systemctl enable netbox-rq
+systemctl enable redis-server
+systemctl enable postgresql
+systemctl enable nginx
+
+# -- Ensure firstboot hooks run on first boot ---------------------------------
+
+sed -i '/RUN_FIRSTBOOT/ s/=.*/=true/' /etc/default/inithooks
+
+# -- Stop services (will start on first boot) ---------------------------------
+
+service postgresql stop
+service redis-server stop
+
+echo "NetBox ${NETBOX_VER} installation complete."

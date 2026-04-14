@@ -1,0 +1,3 @@
+NetBox:      https://$ipaddr/
+NetBox API:  https://$ipaddr/api/
+Webmin:      https://$ipaddr:12320/

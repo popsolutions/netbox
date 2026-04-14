@@ -1,0 +1,16 @@
+turnkey-netbox-19.0 (1) turnkey; urgency=low
+
+  * Initial release of TurnKey NetBox appliance.
+
+  * NetBox 4.5.7 installed from upstream git.
+
+  * Includes nginx reverse proxy with TLS, gunicorn WSGI, systemd services,
+    Redis for caching and task queuing, PostgreSQL 16 backend.
+
+  * First boot inithook for admin user creation with email and password.
+
+  * Optional OIDC SSO integration (Zitadel, Keycloak, Authentik compatible).
+
+  * Based on TurnKey Core 19.0 (Debian 13/Trixie).
+
+ -- PopSolutions Cooperativa de Tecnologia <dev@pop.coop>  Mon, 14 Apr 2026 00:00:00 +0000
