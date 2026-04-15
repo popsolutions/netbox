@@ -8,7 +8,11 @@ NETBOX_USER=netbox
 
 pg_ver=$(pg_lsclusters -h | awk '{print $1}' | head -1)
 
-service postgresql start
+PG_DATA=/var/lib/postgresql/17/main
+PG_CONF=/etc/postgresql/17/main/postgresql.conf
+PG_LOG=/var/log/postgresql/postgresql-17-main.log
+
+su postgres -c "/usr/lib/postgresql/17/bin/pg_ctl start -D ${PG_DATA} -l ${PG_LOG} -o '-c config_file=${PG_CONF}'"
 service redis-server start
 
 su - postgres -c "createuser ${NETBOX_USER}"
@@ -182,7 +186,7 @@ sed -i '/RUN_FIRSTBOOT/ s/=.*/=true/' /etc/default/inithooks
 
 # -- Stop services (will start on first boot) ---------------------------------
 
-service postgresql stop
-service redis-server stop
+su postgres -c "/usr/lib/postgresql/17/bin/pg_ctl stop -D ${PG_DATA} -m fast" || true
+service redis-server stop || true
 
 echo "NetBox ${NETBOX_VER} installation complete."
