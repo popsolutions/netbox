@@ -154,5 +154,10 @@ SOCIAL_AUTH_REDIRECT_IS_HTTPS = True
             f.write(f"exec(open('{OIDC_PY}').read())\n")
 
 
+    # -- Restart NetBox to pick up new database password and config -----------
+    subprocess.run(['systemctl', 'restart', 'netbox'], check=False)
+    subprocess.run(['systemctl', 'restart', 'netbox-rq'], check=False)
+
+
 if __name__ == '__main__':
     main()
